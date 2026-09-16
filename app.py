@@ -165,7 +165,7 @@ if "log_combate" not in st.session_state:
 
 # PANTALLA INICIAL: INICIALIZACIÓN / CARGA
 if st.session_state.jugador is None:
-    st.title("🛡️ Sistema RPG: Chronicles of Eldoria")
+    st.title("🛡️ GAME OF ATIZAPAN")
     st.caption("Backend en POO, Persistencia File I/O (JSON) y Control Matricial Vectorial.")
     
     tab1, tab2 = st.tabs(["✨ Crear Nueva Partida", "📂 Cargar Partida de Disco"])
