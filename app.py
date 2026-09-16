@@ -1,304 +1,374 @@
-import streamlit as st
+import json
+import os
 import random
+import matplotlib.pyplot as plt
+import streamlit as st
 
-st.set_page_config(page_title="Chronicles of Eldoria RPG", page_icon="⚔️", layout="wide")
+st.set_page_config(page_title="GAME OF ATIZAPAN", page_icon="⚔️", layout="wide")
 
-# Compatibilidad de recarga para cualquier versión de Streamlit
+# Estilos CSS
+st.markdown("""
+    <style>
+    .main { background-color: #0e1117; }
+    .stButton>button { width: 100%; border-radius: 6px; font-weight: bold; }
+    .status-card { background-color: #1e222d; padding: 12px; border-radius: 8px; border-left: 4px solid #3498db; }
+    .map-cell { background-color: #1a1c23; border: 1px solid #343b4f; padding: 10px; text-align: center; border-radius: 5px; }
+    .map-cell-player { background-color: #2c3e50; border: 2px solid #f39c12; padding: 10px; text-align: center; border-radius: 5px; font-weight: bold; }
+    </style>
+""", unsafe_allow_html=True)
+
 def recargar():
     if hasattr(st, "rerun"):
         st.rerun()
     elif hasattr(st, "experimental_rerun"):
         st.experimental_rerun()
 
-# Estilos CSS
-st.markdown("""
-    <style>
-    .main { background-color: #0e1117; }
-    .stButton>button { width: 100%; border-radius: 8px; font-weight: bold; }
-    .npc-card { background-color: #1a1c23; border: 1px solid #343b4f; padding: 15px; border-radius: 10px; margin-bottom: 15px; }
-    .combat-log { background-color: #1e222d; padding: 8px 12px; border-radius: 6px; border-left: 4px solid #f39c12; margin-bottom: 5px; }
-    </style>
-""", unsafe_allow_html=True)
+# ==========================================
+# 1. ARQUITECTURA DE CLASES (POO Y HERENCIA)
+# ==========================================
 
-# DATOS
-CLASES = {
-    "Guerrero 🛡️": {"hp_max": 160, "mana_max": 30, "atq": 18, "def": 10, "habilidad": "Golpe de Escudo (20 MP)"},
-    "Mago 🔮": {"hp_max": 95, "mana_max": 110, "atq": 26, "def": 4, "habilidad": "Bola de Fuego (30 MP)"},
-    "Pícaro 🗡️": {"hp_max": 115, "mana_max": 50, "atq": 22, "def": 6, "habilidad": "Ataque Furtivo (25 MP)"}
-}
+class Entidad:
+    """Clase Base que define la lógica global de combate."""
+    def __init__(self, nombre: str, hp: int, atq: int, defensa: int):
+        self.nombre = nombre
+        self.hp = hp
+        self.hp_max = hp
+        self.atq = atq
+        self.defensa = defensa
 
-ENEMIGOS = {
+    def esta_vivo(self) -> bool:
+        return self.hp > 0
+
+    def recibir_dano(self, cantidad: int) -> int:
+        dano_real = max(1, cantidad - self.defensa)
+        self.hp = max(0, self.hp - dano_real)
+        return dano_real
+
+
+class Jugador(Entidad):
+    """Clase Jugador con estado dinámico, posición 2D e historial para telemetría."""
+    def __init__(self, nombre: str, clase: str):
+        stats = {
+            "Guerrero 🛡️": (170, 22, 10),
+            "Mago 🔮": (100, 30, 4),
+            "Pícaro 🗡️": (125, 26, 6)
+        }.get(clase, (120, 20, 5))
+        
+        super().__init__(nombre, stats[0], stats[1], stats[2])
+        self.clase = clase
+        self.nivel = 1
+        self.xp = 0
+        self.xp_siguiente = 100
+        self.oro = 60
+        self.pos_x = 0
+        self.pos_y = 0
+        self.historial_dano = []
+
+    def mover(self, dx: int, dy: int, limite: int = 3):
+        self.pos_x = max(0, min(limite - 1, self.pos_x + dx))
+        self.pos_y = max(0, min(limite - 1, self.pos_y + dy))
+
+    def ganar_xp(self, cantidad: int) -> bool:
+        self.xp += cantidad
+        if self.xp >= self.xp_siguiente:
+            self.nivel += 1
+            self.xp -= self.xp_siguiente
+            self.xp_siguiente = int(self.xp_siguiente * 1.5)
+            self.hp_max += 25
+            self.hp = self.hp_max
+            self.atq += 5
+            self.defensa += 2
+            return True
+        return False
+
+    def a_dict(self) -> dict:
+        """Serialización del objeto a diccionario."""
+        return {
+            "nombre": self.nombre, "clase": self.clase, "nivel": self.nivel,
+            "xp": self.xp, "xp_siguiente": self.xp_siguiente, "hp": self.hp,
+            "hp_max": self.hp_max, "atq": self.atq, "defensa": self.defensa,
+            "oro": self.oro, "pos_x": self.pos_x, "pos_y": self.pos_y,
+            "historial_dano": self.historial_dano
+        }
+
+    @classmethod
+    def desde_dict(cls, data: dict):
+        """Deserialización e instanciación de clase."""
+        j = cls(data["nombre"], data["clase"])
+        j.nivel = data["nivel"]
+        j.xp = data["xp"]
+        j.xp_siguiente = data["xp_siguiente"]
+        j.hp = data["hp"]
+        j.hp_max = data["hp_max"]
+        j.atq = data["atq"]
+        j.defensa = data["defensa"]
+        j.oro = data["oro"]
+        j.pos_x = data["pos_x"]
+        j.pos_y = data["pos_y"]
+        j.historial_dano = data.get("historial_dano", [])
+        return j
+
+
+class Enemigo(Entidad):
+    """Clase de Enemigos derivada de Entidad."""
+    def __init__(self, nombre: str, hp: int, atq: int, defensa: int, xp: int, oro: int, icono: str):
+        super().__init__(nombre, hp, atq, defensa)
+        self.xp = xp
+        self.oro = oro
+        self.icono = icono
+
+
+# ==========================================
+# 2. SISTEMA DE PERSISTENCIA (FILE I/O JSON)
+# ==========================================
+
+class GestorPersistencia:
+    ARCHIVO = "partida.json"
+
+    @classmethod
+    def guardar(cls, jugador: Jugador):
+        with open(cls.ARCHIVO, "w", encoding="utf-8") as f:
+            json.dump(jugador.a_dict(), f, indent=4)
+
+    @classmethod
+    def cargar(cls) -> Jugador | None:
+        if os.path.exists(cls.ARCHIVO):
+            try:
+                with open(cls.ARCHIVO, "r", encoding="utf-8") as f:
+                    return Jugador.desde_dict(json.load(f))
+            except Exception:
+                return None
+        return None
+
+# ==========================================
+# 3. TELEMETRÍA Y GRÁFICOS (MATPLOTLIB)
+# ==========================================
+
+def renderizar_grafica_rendimiento(historial):
+    fig, ax = plt.subplots(figsize=(6, 2.2))
+    fig.patch.set_facecolor('#0e1117')
+    ax.set_facecolor('#1e222d')
+    
+    if historial:
+        ax.plot(historial, color='#f39c12', marker='o', linewidth=2, label="Daño por Turno")
+    else:
+        ax.plot([0], [0], color='#f39c12')
+        
+    ax.set_title("Análisis Estadístico de Combate (DPS)", color="white", fontsize=10)
+    ax.set_xlabel("Turnos", color="white", fontsize=8)
+    ax.set_ylabel("Daño Infligido", color="white", fontsize=8)
+    ax.tick_params(colors='white', labelsize=8)
+    ax.grid(True, linestyle='--', alpha=0.3)
+    ax.legend(facecolor='#1e222d', edgecolor='white', labelcolor='white', fontsize=8)
+    
+    st.pyplot(fig)
+
+# ==========================================
+# 4. CONFIGURACIÓN DEL MAPA 2D
+# ==========================================
+
+MATRIZ_MAPA = [
+    [{"nombre": "🏰 Ciudad Oakhaven", "tipo": "seguro"}, {"nombre": "🌲 Bosque Norte", "tipo": "combate", "zona": "Bosque"}, {"nombre": "🕳️ Cueva Profunda", "tipo": "combate", "zona": "Mazmorra"}],
+    [{"nombre": "🛒 Mercado Central", "tipo": "tienda"}, {"nombre": "🏛️ Ruinas Antiguas", "tipo": "combate", "zona": "Bosque"}, {"nombre": "💀 Cementerio", "tipo": "combate", "zona": "Mazmorra"}],
+    [{"nombre": "🌾 Pradera Sur", "tipo": "combate", "zona": "Bosque"}, {"nombre": "🏰 Fortaleza Abandonada", "tipo": "combate", "zona": "Mazmorra"}, {"nombre": "🐲 Trono Demonio", "tipo": "jefe", "zona": "Jefe"}]
+]
+
+ENEMIGOS_DB = {
     "Bosque": [
-        {"nombre": "Goblin Silvestre", "hp_max": 55, "hp": 55, "atq": 12, "xp": 45, "oro": 30, "icon": "👺"},
-        {"nombre": "Lobo de Sombras", "hp_max": 70, "hp": 70, "atq": 16, "xp": 60, "oro": 35, "icon": "🐺"}
+        lambda: Enemigo("Goblin Explorador", 50, 12, 2, 40, 25, "👺"),
+        lambda: Enemigo("Lobo Ferotaz", 65, 15, 3, 50, 30, "🐺")
     ],
     "Mazmorra": [
-        {"nombre": "Esqueleto Guerrero", "hp_max": 110, "hp": 110, "atq": 22, "xp": 95, "oro": 65, "icon": "💀"},
-        {"nombre": "Orco Devastador", "hp_max": 150, "hp": 150, "atq": 28, "xp": 140, "oro": 100, "icon": "👹"}
+        lambda: Enemigo("Esqueleto Soldado", 100, 20, 5, 90, 60, "💀"),
+        lambda: Enemigo("Orco Guerreador", 140, 25, 8, 130, 90, "👹")
     ],
     "Jefe": [
-        {"nombre": "Rey Demonio Malakor", "hp_max": 350, "hp": 350, "atq": 40, "xp": 600, "oro": 600, "icon": "🐲"}
+        lambda: Enemigo("Rey Demonio Malakor", 320, 38, 12, 500, 500, "🐲")
     ]
 }
 
-# ESTADO INICIAL
+# ==========================================
+# 5. CONTROLADOR PRINCIPAL Y SESIÓN
+# ==========================================
+
 if "jugador" not in st.session_state:
     st.session_state.jugador = None
-if "escena" not in st.session_state:
-    st.session_state.escena = "creacion"
 if "enemigo" not in st.session_state:
     st.session_state.enemigo = None
 if "log_combate" not in st.session_state:
     st.session_state.log_combate = []
 
-def subir_nivel_check():
-    j = st.session_state.jugador
-    if j["xp"] >= j["xp_siguiente"]:
-        j["nivel"] += 1
-        j["xp"] -= j["xp_siguiente"]
-        j["xp_siguiente"] = int(j["xp_siguiente"] * 1.5)
-        j["hp_max"] += 25
-        j["hp"] = j["hp_max"]
-        j["mana_max"] += 15
-        j["mana"] = j["mana_max"]
-        j["atq"] += 6
-        j["def"] += 3
-        st.success(f"⭐ ¡NIVEL {j['nivel']} ALCANZADO!")
-
-def iniciar_combate(zona):
-    enemigo_base = random.choice(ENEMIGOS[zona])
-    st.session_state.enemigo = enemigo_base.copy()
-    st.session_state.log_combate = [f"⚔️ ¡Un {enemigo_base['nombre']} te ataca!"]
-    st.session_state.escena = "combate"
-
-# === CREACIÓN DE PERSONAJE ===
-if st.session_state.escena == "creacion":
-    st.title("⚔️ CHRONICLES OF ELDORIA RPG")
-    st.subheader("Crea a tu Héroe")
+# PANTALLA: CREACIÓN O CARGA DE USUARIO
+if st.session_state.jugador is None:
+    st.title("🛡️ Sistema de Gestión RPG: Chronicles of Eldoria")
+    st.caption("Motor de Juego basado en POO, Persistencia en JSON y Análisis Estadístico.")
     
-    nombre = st.text_input("Nombre del Héroe:", value="Aventurero")
-    clase_sel = st.selectbox("Clase:", list(CLASES.keys()))
-    datos = CLASES[clase_sel]
+    tab1, tab2 = st.tabs(["✨ Crear Nueva Partida", "📂 Cargar Partida de Disco"])
     
-    st.write(f"❤️ **Vida:** {datos['hp_max']} | 🔷 **Maná:** {datos['mana_max']}")
-    st.write(f"⚔️ **Ataque:** {datos['atq']} | 🛡️ **Defensa:** {datos['def']}")
-    st.write(f"✨ **Habilidad:** {datos['habilidad']}")
-    
-    if st.button("🚀 Comenzar la Aventura", key="btn_inicio"):
-        st.session_state.jugador = {
-            "nombre": nombre, "clase": clase_sel, "nivel": 1, "xp": 0, "xp_siguiente": 100,
-            "hp_max": datos["hp_max"], "hp": datos["hp_max"],
-            "mana_max": datos["mana_max"], "mana": datos["mana_max"],
-            "atq": datos["atq"], "def": datos["def"], "oro": 60,
-            "pociones_hp": 2, "pociones_mana": 1, "equipo": "Ropas Simples",
-            "mision_activa": False, "mision_completada": False
-        }
-        st.session_state.escena = "hub"
-        recargar()
+    with tab1:
+        nombre = st.text_input("Nombre de la Entidad Jugador:", value="Héroe")
+        clase = st.selectbox("Seleccionar Clase de Personaje:", ["Guerrero 🛡️", "Mago 🔮", "Pícaro 🗡️"])
+        if st.button("Inicializar Instancia del Jugador", key="btn_crear"):
+            st.session_state.jugador = Jugador(nombre, clase)
+            GestorPersistencia.guardar(st.session_state.jugador)
+            recargar()
 
-# === JUEGO PRINCIPAL ===
+    with tab2:
+        if st.button("Cargar 'partida.json' desde Almacenamiento Local", key="btn_cargar"):
+            j_cargado = GestorPersistencia.cargar()
+            if j_cargado:
+                st.session_state.jugador = j_cargado
+                st.success("¡Objeto instanciado correctamente desde el JSON!")
+                recargar()
+            else:
+                st.error("No se encontró un archivo 'partida.json' válido.")
+
+# PANTALLA PRINCIPAL DEL JUEGO
 else:
     j = st.session_state.jugador
     
+    # Barra Lateral
     with st.sidebar:
-        st.header(f"👤 {j['nombre']}")
-        st.caption(f"{j['clase']} | Nivel {j['nivel']}")
+        st.header(f"👤 {j.nombre}")
+        st.caption(f"Clase: {j.clase} | Nivel {j.nivel}")
         
-        hp_perc = max(0.0, min(1.0, j["hp"] / j["hp_max"]))
-        mp_perc = max(0.0, min(1.0, j["mana"] / j["mana_max"]))
-        xp_perc = max(0.0, min(1.0, j["xp"] / j["xp_siguiente"]))
+        st.progress(max(0.0, min(1.0, j.hp / j.hp_max)), text=f"❤️ HP: {j.hp}/{j.hp_max}")
+        st.progress(max(0.0, min(1.0, j.xp / j.xp_siguiente)), text=f"⭐ XP: {j.xp}/{j.xp_siguiente}")
         
-        st.progress(hp_perc, text=f"❤️ HP: {j['hp']}/{j['hp_max']}")
-        st.progress(mp_perc, text=f"🔷 MP: {j['mana']}/{j['mana_max']}")
-        st.progress(xp_perc, text=f"⭐ XP: {j['xp']}/{j['xp_siguiente']}")
-        
+        st.write(f"⚔️ **Ataque:** {j.atq} | 🛡️ **Defensa:** {j.defensa}")
+        st.write(f"💰 **Oro:** {j.oro} | 📍 **Posición 2D:** ({j.pos_x}, {j.pos_y})")
         st.divider()
+        
         c1, c2 = st.columns(2)
-        c1.metric("⚔️ ATQ", j["atq"])
-        c2.metric("🛡️ DEF", j["def"])
-        
-        st.write(f"💰 **Oro:** {j['oro']}")
-        st.write(f"🧪 **Pociones HP:** {j['pociones_hp']} | 🔷 **MP:** {j['pociones_mana']}")
-        st.caption(f"🛡️ **Equipo:** {j['equipo']}")
-
-    # HUB
-    if st.session_state.escena == "hub":
-        st.title("🏰 Ciudad Antigua de Oakhaven")
-        st.write("Selecciona un lugar para explorar:")
-        
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            st.markdown("<div class='npc-card'><h3>🍺 La Taberna</h3><p>Habla con Brak para misiones y descansos.</p></div>", unsafe_allow_html=True)
-            if st.button("Entrar a la Taberna", key="btn_taberna"):
-                st.session_state.escena = "taberna"
-                recargar()
-
-        with col2:
-            st.markdown("<div class='npc-card'><h3>🛒 El Mercado</h3><p>Compra armas y pociones con Gideon.</p></div>", unsafe_allow_html=True)
-            if st.button("Entrar al Mercado", key="btn_tienda"):
-                st.session_state.escena = "tienda"
-                recargar()
-
-        with col3:
-            st.markdown("<div class='npc-card'><h3>🔮 El Sabio</h3><p>Recibe bendiciones mágicas de Eldrin.</p></div>", unsafe_allow_html=True)
-            if st.button("Visitar al Sabio", key="btn_sabio"):
-                st.session_state.escena = "sabio"
-                recargar()
-
-        st.divider()
-        st.subheader("🗺️ Combates disponibles")
-        cz1, cz2, cz3 = st.columns(3)
-        if cz1.button("🌲 Bosque Silvestre", key="btn_bosque"):
-            iniciar_combate("Bosque")
-            recargar()
-        if cz2.button("🏛️ Mazmorra Maldita", key="btn_mazmorra"):
-            iniciar_combate("Mazmorra")
-            recargar()
-        if cz3.button("🐲 Rey Demonio (JEFE)", key="btn_jefe", type="primary"):
-            iniciar_combate("Jefe")
+        if c1.button("💾 Guardar JSON", key="sb_save"):
+            GestorPersistencia.guardar(j)
+            st.toast("Progreso guardado en partida.json", icon="💾")
+        if c2.button("🚪 Salir", key="sb_exit"):
+            st.session_state.jugador = None
             recargar()
 
-    # TABERNA
-    elif st.session_state.escena == "taberna":
-        st.title("🍺 La Taberna de Brak")
-        st.markdown("<div class='npc-card'><b>Brak el Tabernero:</b> <i>'¡Bienvenido! ¿Buscas un trago o trabajo?'</i></div>", unsafe_allow_html=True)
-        
-        if st.button("🛌 Descansar (15 💰)", key="btn_descanso"):
-            if j["oro"] >= 15:
-                j["oro"] -= 15
-                j["hp"], j["mana"] = j["hp_max"], j["mana_max"]
-                st.success("¡Salud y Maná restaurados!")
-                recargar()
-            else:
-                st.error("Oro insuficiente.")
-
-        if not j["mision_activa"] and not j["mision_completada"]:
-            if st.button("📜 Aceptar Misión de Caza", key="btn_mision_acc"):
-                j["mision_activa"] = True
-                st.info("Misión aceptada: Gana 1 combate y regresa.")
-                recargar()
-        elif j["mision_activa"] and not j["mision_completada"]:
-            if st.button("🎁 Cobrar Recompensa de Misión", key="btn_mision_cob"):
-                j["oro"] += 80
-                j["xp"] += 50
-                j["mision_activa"] = False
-                j["mision_completada"] = True
-                subir_nivel_check()
-                recargar()
-                
-        if st.button("⬅️ Volver a la Ciudad", key="btn_back_taberna"):
-            st.session_state.escena = "hub"
-            recargar()
-
-    # TIENDA
-    elif st.session_state.escena == "tienda":
-        st.title("🛒 El Mercado de Gideon")
-        st.markdown("<div class='npc-card'><b>Gideon:</b> <i>'Tengo lo necesario para mantenerte vivo.'</i></div>", unsafe_allow_html=True)
-        
-        if st.button("🧪 Poción HP (+50 HP) - 25 💰", key="btn_buy_hp"):
-            if j["oro"] >= 25:
-                j["oro"] -= 25
-                j["pociones_hp"] += 1
-                recargar()
-        if st.button("🔷 Poción MP (+40 MP) - 20 💰", key="btn_buy_mp"):
-            if j["oro"] >= 20:
-                j["oro"] -= 20
-                j["pociones_mana"] += 1
-                recargar()
-        if st.button("⚔️ Espada Rúnica (+10 ATQ) - 90 💰", key="btn_buy_sword"):
-            if j["oro"] >= 90 and "Espada" not in j["equipo"]:
-                j["oro"] -= 90
-                j["atq"] += 10
-                j["equipo"] = "Espada Rúnica"
-                recargar()
-
-        if st.button("⬅️ Volver a la Ciudad", key="btn_back_tienda"):
-            st.session_state.escena = "hub"
-            recargar()
-
-    # SABIO
-    elif st.session_state.escena == "sabio":
-        st.title("🔮 Eldrin el Sabio")
-        st.markdown("<div class='npc-card'><b>Eldrin:</b> <i>'Aumentaré tu poder a cambio de oro.'</i></div>", unsafe_allow_html=True)
-        
-        if st.button("✨ Ritual de Fuerza (+4 ATQ) - 75 💰", key="btn_buff_atq"):
-            if j["oro"] >= 75:
-                j["oro"] -= 75
-                j["atq"] += 4
-                recargar()
-        if st.button("🛡️ Bendición Arcana (+4 DEF) - 75 💰", key="btn_buff_def"):
-            if j["oro"] >= 75:
-                j["oro"] -= 75
-                j["def"] += 4
-                recargar()
-
-        if st.button("⬅️ Volver a la Ciudad", key="btn_back_sabio"):
-            st.session_state.escena = "hub"
-            recargar()
-
-    # COMBATE
-    elif st.session_state.escena == "combate":
+    # Si estamos en estado de combate
+    if st.session_state.enemigo is not None:
         ene = st.session_state.enemigo
-        st.title(f"⚔️ BATALLA: {j['nombre']} vs {ene['icon']} {ene['nombre']}")
+        st.title(f"⚔️ Módulo de Combate: {j.nombre} vs {ene.icono} {ene.nombre}")
         
-        ene_hp_perc = max(0.0, min(1.0, ene["hp"] / ene["hp_max"]))
-        st.progress(ene_hp_perc, text=f"Salud de {ene['nombre']}: {ene['hp']}/{ene['hp_max']} HP")
+        st.progress(max(0.0, min(1.0, ene.hp / ene.hp_max)), text=f"Salud Enemigo: {ene.hp}/{ene.hp_max} HP")
         
-        b1, b2, b3, b4 = st.columns(4)
-        
-        if b1.button("⚔️ Atacar", key="btn_bat_atq"):
-            crit = random.random() < 0.2
-            dano = (j["atq"] * 2 if crit else j["atq"]) + random.randint(-2, 3)
-            dano = max(1, dano)
-            ene["hp"] -= dano
-            txt = " 💥 ¡CRÍTICO!" if crit else ""
-            st.session_state.log_combate.append(f"🗡️ Infligiste **{dano}** de daño.{txt}")
+        b1, b2, b3 = st.columns(3)
+        if b1.button("⚔️ Ejecutar Ataque Básico", key="cb_atq"):
+            dano = max(1, j.atq + random.randint(-3, 4))
+            dano_recibido = ene.recibir_dano(dano)
+            j.historial_dano.append(dano_recibido)
+            st.session_state.log_combate.append(f"🗡️ Infligiste **{dano_recibido}** de daño a {ene.nombre}.")
             
-            if ene["hp"] > 0:
-                dano_e = max(1, ene["atq"] - j["def"] + random.randint(-2, 2))
-                j["hp"] -= dano_e
-                st.session_state.log_combate.append(f"🩸 {ene['nombre']} atacó con **{dano_e}** de daño.")
+            if ene.esta_vivo():
+                d_ene = ene.atq + random.randint(-2, 2)
+                d_rec = j.recibir_dano(d_ene)
+                st.session_state.log_combate.append(f"💥 {ene.nombre} te infligió **{d_rec}** de daño.")
             recargar()
 
-        if b2.button("✨ Habilidad", key="btn_bat_hab"):
-            costo = 20 if "Guerrero" in j["clase"] else (30 if "Mago" in j["clase"] else 25)
-            if j["mana"] >= costo:
-                j["mana"] -= costo
-                dano_m = int(j["atq"] * 1.8) + random.randint(3, 8)
-                ene["hp"] -= dano_m
-                st.session_state.log_combate.append(f"✨ ¡Habilidad usada! **{dano_m}** de daño.")
-                if ene["hp"] > 0:
-                    dano_e = max(1, ene["atq"] - j["def"])
-                    j["hp"] -= dano_e
-                    st.session_state.log_combate.append(f"🩸 {ene['nombre']} atacó con **{dano_e}** de daño.")
+        if b2.button("🧪 Consumir Poción (30 HP - 20 💰)", key="cb_poc"):
+            if j.oro >= 20:
+                j.oro -= 20
+                j.hp = min(j.hp_max, j.hp + 40)
+                st.session_state.log_combate.append("🧪 Te has curado 40 HP.")
             recargar()
 
-        if b3.button("🧪 Poción HP", key="btn_bat_poc"):
-            if j["pociones_hp"] > 0:
-                j["pociones_hp"] -= 1
-                j["hp"] = min(j["hp_max"], j["hp"] + 50)
-                st.session_state.log_combate.append("🧪 Curaste **50 HP**.")
-            recargar()
-
-        if b4.button("🏃 Huir", key="btn_bat_huir"):
-            st.session_state.escena = "hub"
+        if b3.button("🏃 Retirada Táctica", key="cb_huir"):
+            st.session_state.enemigo = None
+            st.session_state.log_combate = []
             recargar()
 
         st.divider()
-        for log in reversed(st.session_state.log_combate[-4:]):
-            st.markdown(f"<div class='combat-log'>{log}</div>", unsafe_allow_html=True)
-
-        if ene["hp"] <= 0:
-            st.success(f"🏆 ¡HAS DERROTADO A {ene['nombre'].upper()}!")
-            j["xp"] += ene["xp"]
-            j["oro"] += ene["oro"]
-            subir_nivel_check()
-            if st.button("Regresar a la Ciudad", key="btn_vic_back"):
-                st.session_state.escena = "hub"
-                recargar()
+        col_log, col_graf = st.columns([1, 1])
+        with col_log:
+            st.subheader("Registro de Batalla")
+            for log in reversed(st.session_state.log_combate[-4:]):
+                st.markdown(f"<div class='status-card'>{log}</div><br>", unsafe_allow_html=True)
                 
-        elif j["hp"] <= 0:
-            st.error("💀 HAS SIDO DERROTADO...")
-            if st.button("🔄 Reiniciar Aventura", key="btn_der_back"):
-                st.session_state.clear()
+        with col_graf:
+            renderizar_grafica_rendimiento(j.historial_dano)
+
+        if not ene.esta_vivo():
+            st.balloons()
+            st.success(f"🏆 ¡Enemigo Neutralizado! Recompensas: +{ene.xp} XP, +{ene.oro} Oro")
+            j.oro += ene.oro
+            subio = j.ganar_xp(ene.xp)
+            if subio:
+                st.toast("¡Nivel Aumentado!", icon="⭐")
+            st.session_state.enemigo = None
+            GestorPersistencia.guardar(j)
+            if st.button("Continuar Exploración", key="btn_post_vic"):
                 recargar()
+
+        elif not j.esta_vivo():
+            st.error("💀 La entidad Jugador ha sido destruida.")
+            if st.button("Cargar Último Save", key="btn_post_der"):
+                st.session_state.jugador = GestorPersistencia.cargar()
+                st.session_state.enemigo = None
+                recargar()
+
+    # Modo Exploración en Matriz 2D
+    else:
+        st.title("🗺️ Matriz de Navegación Espacial 2D")
+        
+        celda_actual = MATRIZ_MAPA[j.pos_y][j.pos_x]
+        st.markdown(f"<div class='status-card'>Ubicación actual: <b>{celda_actual['nombre']}</b> | Coordenadas: [{j.pos_x}, {j.pos_y}]</div><br>", unsafe_allow_html=True)
+
+        # Renderizado Visual de la Matriz 3x3
+        for y in range(3):
+            cols = st.columns(3)
+            for x in range(3):
+                info_celda = MATRIZ_MAPA[y][x]
+                with cols[x]:
+                    if x == j.pos_x and y == j.pos_y:
+                        st.markdown(f"<div class='map-cell-player'>📍 {info_celda['nombre']}<br>(TÚ)</div>", unsafe_allow_html=True)
+                    else:
+                        st.markdown(f"<div class='map-cell'>{info_celda['nombre']}</div>", unsafe_allow_html=True)
+        st.divider()
+
+        # Controles de Movimiento Vectorial
+        st.subheader("Control Vectorial de Posición")
+        ctrl1, ctrl2, ctrl3, ctrl4 = st.columns(4)
+        if ctrl1.button("⬆️ Norte (Y-1)", key="mov_n"):
+            j.mover(0, -1); recargar()
+        if ctrl2.button("⬇️ Sur (Y+1)", key="mov_s"):
+            j.mover(0, 1); recargar()
+        if ctrl3.button("⬅️ Oeste (X-1)", key="mov_o"):
+            j.mover(-1, 0); recargar()
+        if ctrl4.button("➡️ Este (X+1)", key="mov_e"):
+            j.mover(1, 0); recargar()
+
+        st.divider()
+
+        # Lógica por Tipo de Celda
+        if celda_actual["tipo"] == "seguro":
+            st.info("🏡 Zona Segura: Puedes descansar para regenerar tus atributos.")
+            if st.button("🛌 Descansar en la Ciudad (10 💰)", key="act_descansar"):
+                if j.oro >= 10:
+                    j.oro -= 10
+                    j.hp = j.hp_max
+                    GestorPersistencia.guardar(j)
+                    st.success("Salud completamente restaurada.")
+                    recargar()
+
+        elif celda_actual["tipo"] == "tienda":
+            st.info("🛒 Tienda Local: Mejora tu equipo base.")
+            if st.button("⚔️ Comprar Mejora de Arma (+5 ATQ) - 50 💰", key="act_tienda"):
+                if j.oro >= 50:
+                    j.oro -= 50
+                    j.atq += 5
+                    GestorPersistencia.guardar(j)
+                    st.success("¡Atributo de Ataque incrementado!")
+                    recargar()
+
+        elif celda_actual["tipo"] in ["combate", "jefe"]:
+            st.warning("⚠️ Zona Hostil Detectada.")
+            if st.button("⚔️ Iniciar Protocolo de Combate", key="act_combate"):
+                gen_enemigo = random.choice(ENEMIGOS_DB[celda_actual["zona"]])
+                st.session_state.enemigo = gen_enemigo()
+                st.session_state.log_combate = [f"Combate iniciado contra {st.session_state.enemigo.nombre}"]
+                recargar()
+
+        st.subheader("Telemetría Acumulada del Jugador")
+        renderizar_grafica_rendimiento(j.historial_dano)
