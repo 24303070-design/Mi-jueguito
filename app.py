@@ -3,7 +3,7 @@ import os
 import random
 import streamlit as st
 
-st.set_page_config(page_title="GAME OF ATIZAPAN", page_icon="⚔️", layout="wide")
+st.set_page_config(page_title="RPG CHRONICLESS OF ELDORIA ", page_icon="⚔️", layout="wide")
 
 def recargar():
     if hasattr(st, "rerun"):
